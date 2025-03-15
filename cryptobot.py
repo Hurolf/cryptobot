@@ -1,75 +1,68 @@
-import os
 import ccxt
-import joblib
 import numpy as np
 import pandas as pd
-import qiskit
-import optuna
-import tensorflow as tf
-from flask import Flask, render_template, jsonify
-from sklearn.model_selection import train_test_split
-from stable_baselines3 import DQN
-from qiskit import Aer, execute, QuantumCircuit
-from qiskit.algorithms import QAOA
-from qiskit.optimization import QuadraticProgram
-from qiskit.optimization.algorithms import MinimumEigenOptimizer
+import time
+import json
+import talib
+from sklearn.ensemble import RandomForestRegressor
 
-# Charger les variables d'environnement
-MODE = "TEST"  # Changer en "LIVE" pour mode réel
-API_KEY = os.getenv("BINANCE_TEST_API_KEY") if MODE == "TEST" else os.getenv("BINANCE_REAL_API_KEY")
-API_SECRET = os.getenv("BINANCE_TEST_API_SECRET") if MODE == "TEST" else os.getenv("BINANCE_REAL_API_SECRET")
-
+# Configuration API Binance
+api_key = "YOUR_API_KEY"
+api_secret = "YOUR_API_SECRET"
 exchange = ccxt.binance({
-    'apiKey': API_KEY,
-    'secret': API_SECRET,
-    'enableRateLimit': True,
+    'apiKey': api_key,
+    'secret': api_secret,
+    'options': {'defaultType': 'future'}
 })
 
-if MODE == "TEST":
-    exchange.set_sandbox_mode(True)
+symbol = 'BTC/USDT'
+timeframe = '15m'
+investment = 100  # Montant en USDT par trade
 
-print(f"✅ Mode {MODE} activé")
+# Chargement des données de marché
+def fetch_data():
+    bars = exchange.fetch_ohlcv(symbol, timeframe, limit=100)
+    df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+    df['returns'] = df['close'].pct_change()
+    return df
 
-# Initialisation Flask
-app = Flask(__name__)
+# Feature Engineering + IA
+rf_model = RandomForestRegressor(n_estimators=100)
 
-def get_binance_data(symbol="BTC/USDT", timeframe="1h", limit=1000):
-    ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-    df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
-    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-    df["returns"] = df["close"].pct_change()
-    df["target"] = np.where(df["returns"].shift(-1) > 0, 1, 0)
-    return df.dropna()
+def train_model(df):
+    df.dropna(inplace=True)
+    X = df[['open', 'high', 'low', 'close', 'volume']].values
+    y = df['returns'].shift(-1).fillna(0).values
+    rf_model.fit(X, y)
 
-@app.route('/')
-def dashboard():
-    return render_template("index.html")
+def predict_market(df):
+    X = df[['open', 'high', 'low', 'close', 'volume']].values[-1].reshape(1, -1)
+    return rf_model.predict(X)[0]
 
-@app.route('/status')
-def status():
+# Trading Logic
+def execute_trade():
+    df = fetch_data()
+    train_model(df)
+    prediction = predict_market(df)
     balance = exchange.fetch_balance()
-    return jsonify({
-        "capital": balance['total']['USDT'],
-        "mode": MODE
-    })
+    usdt_available = balance['total']['USDT']
+    
+    if prediction > 0 and usdt_available >= investment:
+        print("Achat de BTC")
+        order = exchange.create_market_buy_order(symbol, investment / df['close'].iloc[-1])
+        return order
+    elif prediction < 0:
+        print("Vente de BTC")
+        btc_available = balance['total']['BTC']
+        if btc_available > 0:
+            order = exchange.create_market_sell_order(symbol, btc_available)
+            return order
+    return None
 
-# Implémentation de QAOA pour optimiser le trading
-qp = QuadraticProgram()
-qp.binary_var_list(["trade_BTC", "trade_ETH", "trade_BNB"])
-qp.minimize(linear=[-0.1, -0.15, -0.2])
-
-simulator = Aer.get_backend('aer_simulator')
-qaoa = QAOA()
-optimizer = MinimumEigenOptimizer(qaoa)
-result = optimizer.solve(qp)
-print("✅ Meilleure stratégie de trading :", result.x)
-
-# Implémentation du Reinforcement Learning Quantique
-env = get_binance_data()
-model = DQN("MlpPolicy", env, verbose=1)
-model.learn(total_timesteps=10000)
-
-print("✅ Reinforcement Learning Quantique entraîné !")
-
-if __name__ == '__main__':
-    app.run(host="0.0.0.0", port=5000, debug=True)
+# Boucle principale
+while True:
+    try:
+        execute_trade()
+        time.sleep(900)  # Attendre 15 minutes entre chaque trade
+    except Exception as e:
+        print(f"Erreur: {e}")
