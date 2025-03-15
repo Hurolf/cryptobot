@@ -25,6 +25,17 @@ symbol = 'BTC/USDT'
 timeframe = '15m'
 investment = 100  # Montant en USDT par trade
 
+# Chemin du fichier de statut
+status_file = "/var/www/html/cryptobot/status.json"
+
+def update_status(action):
+    status = {
+        "last_update": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "last_action": action
+    }
+    with open(status_file, "w") as f:
+        json.dump(status, f)
+
 # Chargement des données de marché
 def fetch_data():
     bars = exchange.fetch_ohlcv(symbol, timeframe, limit=200)
@@ -62,18 +73,21 @@ def execute_trade():
     prediction = predict_market(df)
     balance = exchange.fetch_balance()
     usdt_available = balance['total']['USDT']
+    action = "Aucune action"
     
     if prediction > 0 and usdt_available >= investment:
-        print("Achat de BTC")
+        action = "Achat de BTC"
         order = exchange.create_market_buy_order(symbol, investment / df['close'].iloc[-1])
-        return order
     elif prediction < 0:
-        print("Vente de BTC")
         btc_available = balance['total']['BTC']
         if btc_available > 0:
+            action = "Vente de BTC"
             order = exchange.create_market_sell_order(symbol, btc_available)
-            return order
-    return None
+    
+    update_status(action)
+
+# Initialisation du statut
+update_status("Bot démarré")
 
 # Boucle principale
 while True:
@@ -81,4 +95,5 @@ while True:
         execute_trade()
         time.sleep(900)  # Attendre 15 minutes entre chaque trade
     except Exception as e:
-        print(f"Erreur: {e}")
+        update_status(f"Erreur: {str(e)}")
+        time.sleep(900)
