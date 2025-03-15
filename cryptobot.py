@@ -3,12 +3,18 @@ import numpy as np
 import pandas as pd
 import time
 import json
-import talib
+import os
+from dotenv import load_dotenv
 from sklearn.ensemble import RandomForestRegressor
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
+
+# Charger les variables d'environnement
+load_dotenv()
+api_key = os.getenv("BINANCE_API_KEY")
+api_secret = os.getenv("BINANCE_API_SECRET")
 
 # Configuration API Binance
-api_key = "YOUR_API_KEY"
-api_secret = "YOUR_API_SECRET"
 exchange = ccxt.binance({
     'apiKey': api_key,
     'secret': api_secret,
@@ -21,22 +27,32 @@ investment = 100  # Montant en USDT par trade
 
 # Chargement des données de marché
 def fetch_data():
-    bars = exchange.fetch_ohlcv(symbol, timeframe, limit=100)
+    bars = exchange.fetch_ohlcv(symbol, timeframe, limit=200)
     df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
     df['returns'] = df['close'].pct_change()
+    df['volatility'] = df['returns'].rolling(window=10).std()
+    df['momentum'] = df['close'].diff()
+    df.dropna(inplace=True)
     return df
 
 # Feature Engineering + IA
-rf_model = RandomForestRegressor(n_estimators=100)
+rf_model = RandomForestRegressor(n_estimators=200)
+scaler = StandardScaler()
 
 def train_model(df):
     df.dropna(inplace=True)
-    X = df[['open', 'high', 'low', 'close', 'volume']].values
+    features = ['open', 'high', 'low', 'close', 'volume', 'volatility', 'momentum']
+    X = df[features].values
     y = df['returns'].shift(-1).fillna(0).values
-    rf_model.fit(X, y)
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    X_train = scaler.fit_transform(X_train)
+    X_test = scaler.transform(X_test)
+    rf_model.fit(X_train, y_train)
 
 def predict_market(df):
-    X = df[['open', 'high', 'low', 'close', 'volume']].values[-1].reshape(1, -1)
+    features = ['open', 'high', 'low', 'close', 'volume', 'volatility', 'momentum']
+    X = df[features].values[-1].reshape(1, -1)
+    X = scaler.transform(X)
     return rf_model.predict(X)[0]
 
 # Trading Logic
